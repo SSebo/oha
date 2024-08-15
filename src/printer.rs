@@ -429,6 +429,24 @@ fn print_summary<W: Write>(
     print_distribution(w, &duration_all_statistics.percentiles, style)?;
     writeln!(w)?;
 
+    writeln!(w, "{}", style.heading("First chunk wait histogram:"))?;
+    print_histogram(w, &res.first_chunk_wait_statistics().histogram, style)?;
+    writeln!(w)?;
+
+    let first_chunk_wait_statistics = res.first_chunk_wait_statistics();
+    writeln!(w, "{}", style.heading("First chunk wait distribution:"))?;
+    print_distribution(w, &first_chunk_wait_statistics.percentiles, style)?;
+    writeln!(w)?;
+
+    writeln!(w, "{}", style.heading("Max chunk wait histogram:"))?;
+    print_histogram(w, &res.max_chunk_wait_statistics().histogram, style)?;
+    writeln!(w)?;
+
+    let max_chunk_wait_statistics = res.max_chunk_wait_statistics();
+    writeln!(w, "{}", style.heading("Max chunk wait distribution:"))?;
+    print_distribution(w, &max_chunk_wait_statistics.percentiles, style)?;
+    writeln!(w)?;
+
     if stats_success_breakdown {
         let durations_successful_statics = res.duration_successful_statistics();
 

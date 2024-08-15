@@ -153,6 +153,24 @@ impl ResultData {
         Statistics::new(&mut data)
     }
 
+    pub fn first_chunk_wait_statistics(&self) -> Statistics {
+        let mut data = self
+            .success
+            .iter()
+            .map(|r| r.first_chunk_wait().as_secs_f64())
+            .collect::<Vec<_>>();
+        Statistics::new(&mut data)
+    }
+
+    pub fn max_chunk_wait_statistics(&self) -> Statistics {
+        let mut data = self
+            .success
+            .iter()
+            .map(|r| r.max_chunk_wait().as_secs_f64())
+            .collect::<Vec<_>>();
+        Statistics::new(&mut data)
+    }
+
     pub fn duration_successful_statistics(&self) -> Statistics {
         let mut data = self
             .success
@@ -203,6 +221,8 @@ mod tests {
                     .checked_add(Duration::from_millis(connection_time_dialup))
                     .unwrap(),
             }),
+            max_chunk_wait: None,
+            first_chunk_wait: None,
             end: now
                 .checked_add(Duration::from_millis(request_time))
                 .unwrap(),

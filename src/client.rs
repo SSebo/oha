@@ -41,6 +41,8 @@ pub struct RequestResult {
     /// DNS + dialup
     /// None when reuse connection
     pub connection_time: Option<ConnectionTime>,
+    pub first_chunk_wait: Option<std::time::Duration>,
+    pub max_chunk_wait: Option<std::time::Duration>,
     /// When the query ends
     pub end: std::time::Instant,
     /// HTTP status
@@ -53,6 +55,14 @@ impl RequestResult {
     /// Duration the request takes.
     pub fn duration(&self) -> std::time::Duration {
         self.end - self.start_latency_correction.unwrap_or(self.start)
+    }
+
+    pub fn first_chunk_wait(&self) -> std::time::Duration {
+        self.first_chunk_wait.unwrap_or(std::time::Duration::from_secs(0))
+    }
+
+    pub fn max_chunk_wait(&self) -> std::time::Duration {
+        self.max_chunk_wait.unwrap_or(std::time::Duration::from_secs(0))
     }
 }
 
@@ -207,7 +217,7 @@ impl Clone for ClientStateHttp2 {
 }
 
 pub enum QueryLimit {
-    Qps(usize),
+    Qps(f32),
     Burst(std::time::Duration, usize),
 }
 
@@ -473,6 +483,9 @@ impl Client {
             let url = self.url_generator.generate(&mut client_state.rng)?;
             let mut start = std::time::Instant::now();
             let mut connection_time: Option<ConnectionTime> = None;
+            let mut first_chunk_wait: Option<std::time::Duration> = None;
+            let mut max_chunk_wait: Option<std::time::Duration> = None;
+            let mut chunk_rx : Option<std::time::Instant>= None;
 
             let mut send_request = if let Some(send_request) = client_state.send_request.take() {
                 send_request
@@ -505,6 +518,7 @@ impl Client {
 
                     let mut len_sum = 0;
                     while let Some(chunk) = futures::future::poll_fn(|cx| {
+                        update_wait(&mut chunk_rx, &mut max_chunk_wait, &mut first_chunk_wait, start);
                         Incoming::poll_frame(Pin::new(&mut stream), cx)
                     })
                     .await
@@ -535,6 +549,8 @@ impl Client {
                     let result = RequestResult {
                         start_latency_correction: None,
                         start,
+                        first_chunk_wait,
+                        max_chunk_wait,
                         end,
                         status,
                         len_bytes: len_sum,
@@ -585,6 +601,9 @@ impl Client {
         let do_req = async {
             let url = self.url_generator.generate(&mut client_state.rng)?;
             let start = std::time::Instant::now();
+            let mut first_chunk_wait: Option<std::time::Duration> = None;
+            let mut max_chunk_wait: Option<std::time::Duration> = None;
+            let mut chunk_rx : Option<std::time::Instant>= None;
             let connection_time: Option<ConnectionTime> = None;
 
             let request = self.request(&url)?;
@@ -595,6 +614,9 @@ impl Client {
 
                     let mut len_sum = 0;
                     while let Some(chunk) = futures::future::poll_fn(|cx| {
+
+                        update_wait(&mut chunk_rx, &mut max_chunk_wait, &mut first_chunk_wait, start);
+
                         Incoming::poll_frame(Pin::new(&mut stream), cx)
                     })
                     .await
@@ -607,6 +629,8 @@ impl Client {
                     let result = RequestResult {
                         start_latency_correction: None,
                         start,
+                        first_chunk_wait,
+                        max_chunk_wait,
                         end,
                         status,
                         len_bytes: len_sum,
@@ -701,6 +725,25 @@ impl Client {
         } else {
             Ok((send_request, status, len_sum))
         }
+    }
+}
+
+fn update_wait( chunk_rx: &mut Option<Instant>, max_chunk_wait: &mut Option<std::time::Duration>, first_chunk_wait: &mut Option<std::time::Duration>, start: Instant) {
+    if let Some(chunk_rx) = chunk_rx {
+        match *max_chunk_wait {
+            None => *max_chunk_wait = Some(chunk_rx.elapsed()),
+            Some(ref mut max_chunk_wait) => {
+                if chunk_rx.elapsed().as_millis() > max_chunk_wait.as_millis() {
+                    *max_chunk_wait = chunk_rx.elapsed();
+                }
+            }
+        }
+    }
+    *chunk_rx = Some(std::time::Instant::now());
+
+    if first_chunk_wait.is_none() {
+        *first_chunk_wait = Some(start.elapsed());
+        *chunk_rx = Some(std::time::Instant::now());
     }
 }
 
@@ -948,10 +991,8 @@ pub async fn work_with_qps(
             QueryLimit::Qps(qps) => {
                 let start = std::time::Instant::now();
                 for i in 0..n_tasks {
-                    tokio::time::sleep_until(
-                        (start + i as u32 * std::time::Duration::from_secs(1) / qps as u32).into(),
-                    )
-                    .await;
+                    let w = std::time::Duration::from_secs(i as u64 * (1.0 / qps) as u64);
+                    tokio::time::sleep_until( (start + w).into(),) .await;
                     tx.send(())?;
                 }
             }
@@ -1095,10 +1136,12 @@ pub async fn work_with_qps_latency_correction(
             QueryLimit::Qps(qps) => {
                 let start = std::time::Instant::now();
                 for i in 0..n_tasks {
-                    tokio::time::sleep_until(
-                        (start + i as u32 * std::time::Duration::from_secs(1) / qps as u32).into(),
-                    )
-                    .await;
+                    let w = std::time::Duration::from_secs(i as u64 * (1.0 / qps) as u64);
+                    tokio::time::sleep_until( (start + w).into(),) .await;
+                    // tokio::time::sleep_until(
+                        // (start + i as u32 * std::time::Duration::from_secs(1) / qps as u32).into(),
+                    // )
+                    // .await;
                     tx.send(std::time::Instant::now())?;
                 }
             }
@@ -1376,16 +1419,19 @@ pub async fn work_until_with_qps(
 ) {
     let rx = match query_limit {
         QueryLimit::Qps(qps) => {
-            let (tx, rx) = flume::bounded(qps);
+            let bound = if qps > 1.0 {
+                qps as usize
+            } else {
+                1
+            };
+            let (tx, rx) = flume::bounded(bound);
             tokio::spawn(async move {
                 for i in 0.. {
                     if std::time::Instant::now() > dead_line {
                         break;
                     }
-                    tokio::time::sleep_until(
-                        (start + i as u32 * std::time::Duration::from_secs(1) / qps as u32).into(),
-                    )
-                    .await;
+                    let w = std::time::Duration::from_secs(i as u64 * (1.0 / qps) as u64);
+                    tokio::time::sleep_until( (start + w).into(),) .await;
                     let _ = tx.send(());
                 }
                 // tx gone
@@ -1556,10 +1602,12 @@ pub async fn work_until_with_qps_latency_correction(
         QueryLimit::Qps(qps) => {
             tokio::spawn(async move {
                 for i in 0.. {
-                    tokio::time::sleep_until(
-                        (start + i as u32 * std::time::Duration::from_secs(1) / qps as u32).into(),
-                    )
-                    .await;
+                    let w = std::time::Duration::from_secs(i as u64 * (1.0 / qps) as u64);
+                    tokio::time::sleep_until( (start + w).into(),) .await;
+                    // tokio::time::sleep_until(
+                        // (start + i as u32 * std::time::Duration::from_secs(1) / qps as u32).into(),
+                    // )
+                    // .await;
                     let now = std::time::Instant::now();
                     if now > dead_line {
                         break;

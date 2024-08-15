@@ -56,6 +56,8 @@ mod test_db {
         let test_val = RequestResult {
             status: hyper::StatusCode::OK,
             len_bytes: 100,
+            first_chunk_wait: None,
+            max_chunk_wait: None,
             start_latency_correction: None,
             start: std::time::Instant::now(),
             connection_time: None,

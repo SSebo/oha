@@ -61,7 +61,7 @@ Examples: -z 10s -z 3m.",
     )]
     duration: Option<Duration>,
     #[clap(help = "Rate limit for all, in queries per second (QPS)", short = 'q')]
-    query_per_second: Option<usize>,
+    query_per_second: Option<f32>,
     #[arg(
         help = "Introduce delay between a predefined number of requests.
 Note: If qps is specified, burst will be ignored",
@@ -508,7 +508,7 @@ async fn main() -> anyhow::Result<()> {
     };
     if let Some(duration) = opts.duration.take() {
         match opts.query_per_second {
-            Some(0) | None => match opts.burst_duration {
+            Some(0.0) | None => match opts.burst_duration {
                 None => {
                     client::work_until(
                         client,
@@ -579,7 +579,7 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         match opts.query_per_second {
-            Some(0) | None => match opts.burst_duration {
+            Some(0.0) | None => match opts.burst_duration {
                 None => {
                     client::work(
                         client,
